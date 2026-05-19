@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid
 from typing import Any, Dict
 
 import httpx
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = os.getenv("ALLORA_BASE_URL", "http://localhost:8000")
 
 
 def prompt_list(question: str, count: int) -> list[str]:

@@ -122,7 +122,7 @@ cp .env.example .env
 ### 3. Start the API
 
 ```bash
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 3000
 ```
 
 ### 4. Run example conversations
@@ -142,8 +142,26 @@ python docs/console_chat.py
 ### 5. Explore the interactive docs
 
 ```
-http://localhost:8000/docs
+http://localhost:3000/docs
 ```
+
+---
+
+## Deploy on Render
+
+1. Push this repo to GitHub.
+2. Create a new **Web Service** on Render and connect the repository.
+3. Render will detect `render.yaml` automatically, or you can use:
+  - Build command: `pip install -r requirements.txt`
+  - Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+4. Add your secret environment variable:
+  - `GROQ_API_KEY`
+5. Deploy.
+
+Useful notes:
+- The app reads `.env` locally, but on Render you should set variables in the dashboard.
+- Do not upload `.env` or `venv/`; they are already ignored by `.gitignore`.
+- After deploy, your docs will be at `https://<your-service>.onrender.com/docs`.
 
 ---
 

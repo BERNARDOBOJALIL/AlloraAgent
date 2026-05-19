@@ -19,7 +19,7 @@ from typing import Any, Dict
 
 import httpx
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://localhost:3000"
 USER_ID = "alex_2025"
 
 

@@ -102,6 +102,25 @@ class MemoryManager:
         self._write_raw(NS_PROFILE, user_id, result.model_dump())
         return result
 
+    def replace_profile_field(self, user_id: str, field: str, value: Any) -> ProfileMemory:
+        """Replace exactly one profile field with a pre-formatted value."""
+        current = self.get_profile(user_id)
+        merged = current.model_dump()
+        if field not in merged:
+            raise ValueError(f"Unknown profile field: {field}")
+
+        list_fields = {"interests", "personality_traits", "favorite_environments", "hobbies", "dislikes"}
+        scalar_fields = {"social_style", "vibe_summary", "emotional_style"}
+
+        if field in list_fields:
+            merged[field] = self._dedupe_list([], value or [])
+        elif field in scalar_fields:
+            merged[field] = value or None
+
+        result = ProfileMemory(**merged)
+        self._write_raw(NS_PROFILE, user_id, result.model_dump())
+        return result
+
     # ------------------------------------------------------------------
     # Context Memory
     # ------------------------------------------------------------------
@@ -186,7 +205,7 @@ class MemoryManager:
         context = self.get_context(user_id)
 
         score = 0.0
-        total = 11.0  # max denominator
+        total = 13.0  # max denominator
 
         if len(profile.interests) >= 3:
             score += 2.0
@@ -206,11 +225,19 @@ class MemoryManager:
             score += 1.0
         if profile.dislikes:
             score += 1.0
+        if profile.favorite_environments:
+            score += 0.5
         if prefs.conversation_style:
             score += 0.5
         if context.recent_topics:
             score += 0.5
         if profile.emotional_style:
+            score += 0.5
+        if context.recent_life_changes:
+            score += 0.5
+        if context.current_mood_theme:
+            score += 0.5
+        if prefs.sensitive_topics:
             score += 0.5
 
         return round(min(score / total, 1.0), 2)

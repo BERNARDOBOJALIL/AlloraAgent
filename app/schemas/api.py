@@ -6,7 +6,7 @@ Every endpoint returns a fully-typed, validated JSON structure.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Literal, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -102,6 +102,35 @@ class ChatResponse(BaseModel):
         default_factory=ConversationState,
         description="Progress and control signals for the frontend.",
     )
+
+
+ProfileEditCategory = Literal[
+    "interests",
+    "personality_traits",
+    "traits",
+    "social_style",
+    "vibe_summary",
+    "favorite_environments",
+    "hobbies",
+    "dislikes",
+    "emotional_style",
+]
+
+
+class ProfileCategoryUpdateRequest(BaseModel):
+    """
+    Direct edit for one profile category. The user's text is formatted only
+    for the selected category and does not update any other memory field.
+    """
+    text: str = Field(..., min_length=1, description="Raw user text for this category.")
+
+
+class ProfileCategoryUpdateResponse(BaseModel):
+    user_id: str
+    category: str
+    formatted_value: Any
+    profile_memory: dict = Field(default_factory=dict)
+    profile_completion: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 # ---------------------------------------------------------------------------
