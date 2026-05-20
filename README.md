@@ -162,6 +162,9 @@ FastAPI
   POST   /chat
   GET    /profile/{user_id}
   PATCH  /profile/{user_id}/profile-memory/{category}
+  PATCH  /profile/{user_id}/profile-memory
+  PATCH  /profile/{user_id}/preference-memory
+  GET    /profile/{user_id}/match-payload
   DELETE /profile/{user_id}
   GET    /health
 
@@ -296,6 +299,9 @@ Response shape:
 {
   "user_id": "user_abc123",
   "profile_memory": {
+    "edad": null,
+    "genero": null,
+    "bio": null,
     "interests": [],
     "personality_traits": [],
     "social_style": null,
@@ -303,7 +309,8 @@ Response shape:
     "favorite_environments": [],
     "hobbies": [],
     "dislikes": [],
-    "emotional_style": null
+    "emotional_style": null,
+    "location": null
   },
   "context_memory": {
     "recent_topics": [],
@@ -319,9 +326,241 @@ Response shape:
     "sensitive_topics": [],
     "response_length_preference": null
   },
+  "match_preference_memory": {
+    "edad_minima": null,
+    "edad_maxima": null,
+    "distancia_maxima_km": null,
+    "genero_preferido": null
+  },
   "profile_completion": 0.0
 }
 ```
+
+### PATCH `/profile/{user_id}/profile-memory`
+
+Updates frontend-owned profile fields without calling the agent. Use this for
+fixed onboarding data such as age, gender, bio and location, or for already
+structured profile fields.
+
+Request:
+
+```json
+{
+  "edad": 28,
+  "genero": "masculino",
+  "bio": "Me gusta la naturaleza y planes tranquilos",
+  "location": {
+    "lat": 4.711,
+    "lng": -74.072
+  }
+}
+```
+
+### PATCH `/profile/{user_id}/preference-memory`
+
+Updates the dating/match filters collected by the frontend without the agent.
+These values are stored separately from the agent's conversation preferences.
+
+Request:
+
+```json
+{
+  "edad_minima": 24,
+  "edad_maxima": 34,
+  "distancia_maxima_km": 30,
+  "genero_preferido": "femenino"
+}
+```
+
+### GET `/profile/{user_id}/match-payload`
+
+Returns the exact payload expected by the match backend.
+
+Response:
+
+```json
+{
+  "user_id": "6a08df33e975899d2e2b238b",
+  "profile_memory": {
+    "edad": 28,
+    "genero": "masculino",
+    "bio": "Me gusta la naturaleza y planes tranquilos",
+    "interests": ["senderismo", "musica", "cafe"],
+    "personality_traits": ["tranquilo", "curioso"],
+    "social_style": "Prefiere planes relajados",
+    "vibe_summary": "Creativo y calmado",
+    "favorite_environments": ["parques", "cafes"],
+    "hobbies": ["fotografia", "senderismo"],
+    "dislikes": ["ruido excesivo"],
+    "emotional_style": "afectuoso y estable",
+    "location": {
+      "lat": 4.711,
+      "lng": -74.072
+    }
+  },
+  "preference_memory": {
+    "edad_minima": 24,
+    "edad_maxima": 34,
+    "distancia_maxima_km": 30,
+    "genero_preferido": "femenino"
+  },
+  "profile_completion": 1.0
+}
+```
+
+## Guía Para El Frontend: Datos Sin Agente
+
+El frontend debe recabar directamente los datos fijos de onboarding y filtros
+de match. Estos datos no pasan por el agente conversacional.
+
+### 1. Datos Del Perfil Del Usuario
+
+Pide estos campos en el formulario de perfil/onboarding:
+
+```json
+{
+  "edad": 28,
+  "genero": "masculino",
+  "bio": "Me gusta la naturaleza y planes tranquilos",
+  "location": {
+    "lat": 4.711,
+    "lng": -74.072
+  }
+}
+```
+
+Endpoint:
+
+```http
+PATCH /profile/{user_id}/profile-memory
+```
+
+Ejemplo con `fetch`:
+
+```js
+await fetch(`${API_URL}/profile/${userId}/profile-memory`, {
+  method: "PATCH",
+  headers: {
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    edad: 28,
+    genero: "masculino",
+    bio: "Me gusta la naturaleza y planes tranquilos",
+    location: {
+      lat: 4.711,
+      lng: -74.072,
+    },
+  }),
+});
+```
+
+Campos aceptados:
+
+- `edad`: número entre 18 y 120.
+- `genero`: string.
+- `bio`: string.
+- `location.lat`: número entre -90 y 90.
+- `location.lng`: número entre -180 y 180.
+
+También puedes mandar campos ya estructurados si el frontend los tiene:
+
+```json
+{
+  "interests": ["senderismo", "musica", "cafe"],
+  "hobbies": ["fotografia", "senderismo"],
+  "personality_traits": ["tranquilo", "curioso"],
+  "favorite_environments": ["parques", "cafes"],
+  "social_style": "Prefiere planes relajados",
+  "vibe_summary": "Creativo y calmado",
+  "dislikes": ["ruido excesivo"],
+  "emotional_style": "afectuoso y estable"
+}
+```
+
+### 2. Preferencias De Match
+
+Pide estos campos en la pantalla de preferencias/filtros:
+
+```json
+{
+  "edad_minima": 24,
+  "edad_maxima": 34,
+  "distancia_maxima_km": 30,
+  "genero_preferido": "femenino"
+}
+```
+
+Endpoint:
+
+```http
+PATCH /profile/{user_id}/preference-memory
+```
+
+Ejemplo con `fetch`:
+
+```js
+await fetch(`${API_URL}/profile/${userId}/preference-memory`, {
+  method: "PATCH",
+  headers: {
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    edad_minima: 24,
+    edad_maxima: 34,
+    distancia_maxima_km: 30,
+    genero_preferido: "femenino",
+  }),
+});
+```
+
+Campos aceptados:
+
+- `edad_minima`: número entre 18 y 120.
+- `edad_maxima`: número entre 18 y 120.
+- `distancia_maxima_km`: número mayor que 0.
+- `genero_preferido`: string.
+
+Regla importante: `edad_minima` no puede ser mayor que `edad_maxima`.
+
+### 3. Payload Para El Backend De Match
+
+Cuando el frontend ya haya enviado los datos directos y el agente haya
+completado las partes conversacionales, pide el payload final:
+
+```http
+GET /profile/{user_id}/match-payload
+```
+
+Ejemplo con `fetch`:
+
+```js
+const response = await fetch(`${API_URL}/profile/${userId}/match-payload`);
+const matchPayload = await response.json();
+```
+
+Ese `matchPayload` es el JSON que debes mandar al otro backend de match:
+
+```js
+await fetch(`${MATCH_API_URL}/match`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify(matchPayload),
+});
+```
+
+### Flujo Recomendado
+
+1. El usuario llena onboarding fijo en el frontend.
+2. El frontend llama `PATCH /profile/{user_id}/profile-memory`.
+3. El usuario configura filtros de match.
+4. El frontend llama `PATCH /profile/{user_id}/preference-memory`.
+5. El usuario conversa con el agente para completar intereses, hobbies, vibe,
+   dislikes, estilo social y estilo emocional.
+6. El frontend llama `GET /profile/{user_id}/match-payload`.
+7. El frontend envía ese payload al backend de match.
 
 ### PATCH `/profile/{user_id}/profile-memory/{category}`
 
@@ -465,6 +704,16 @@ How the user likes to interact:
 - `depth_preference`
 - `sensitive_topics`
 - `response_length_preference`
+
+### Match Preference Memory
+
+Dating filters collected by the frontend and returned as `preference_memory`
+by `/profile/{user_id}/match-payload`:
+
+- `edad_minima`
+- `edad_maxima`
+- `distancia_maxima_km`
+- `genero_preferido`
 
 ## Project Structure
 

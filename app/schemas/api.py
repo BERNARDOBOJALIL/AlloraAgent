@@ -7,7 +7,9 @@ Every endpoint returns a fully-typed, validated JSON structure.
 from __future__ import annotations
 
 from typing import Any, Literal, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.schemas.memory import Location, MatchPreferenceMemory, ProfileMemory
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +135,62 @@ class ProfileCategoryUpdateResponse(BaseModel):
     profile_completion: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+class ProfileMemoryUpdateRequest(BaseModel):
+    """
+    Direct frontend-owned profile fields plus optional generated profile fields.
+    This endpoint does not call the agent.
+    """
+
+    edad: Optional[int] = Field(default=None, ge=18, le=120)
+    genero: Optional[str] = None
+    bio: Optional[str] = None
+    interests: Optional[List[str]] = None
+    personality_traits: Optional[List[str]] = None
+    favorite_environments: Optional[List[str]] = None
+    hobbies: Optional[List[str]] = None
+    dislikes: Optional[List[str]] = None
+    social_style: Optional[str] = None
+    vibe_summary: Optional[str] = None
+    emotional_style: Optional[str] = None
+    location: Optional[Location] = None
+
+
+class ProfileMemoryUpdateResponse(BaseModel):
+    user_id: str
+    profile_memory: ProfileMemory
+    profile_completion: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class MatchPreferenceMemoryUpdateRequest(BaseModel):
+    edad_minima: Optional[int] = Field(default=None, ge=18, le=120)
+    edad_maxima: Optional[int] = Field(default=None, ge=18, le=120)
+    distancia_maxima_km: Optional[float] = Field(default=None, gt=0)
+    genero_preferido: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_age_range(self) -> "MatchPreferenceMemoryUpdateRequest":
+        if (
+            self.edad_minima is not None
+            and self.edad_maxima is not None
+            and self.edad_minima > self.edad_maxima
+        ):
+            raise ValueError("edad_minima cannot be greater than edad_maxima.")
+        return self
+
+
+class MatchPreferenceMemoryUpdateResponse(BaseModel):
+    user_id: str
+    preference_memory: MatchPreferenceMemory
+    profile_completion: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class MatchPayloadResponse(BaseModel):
+    user_id: str
+    profile_memory: ProfileMemory
+    preference_memory: MatchPreferenceMemory
+    profile_completion: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 # ---------------------------------------------------------------------------
 # Full profile retrieval
 # ---------------------------------------------------------------------------
@@ -146,4 +204,5 @@ class FullProfileResponse(BaseModel):
     profile_memory: dict = Field(default_factory=dict)
     context_memory: dict = Field(default_factory=dict)
     preference_memory: dict = Field(default_factory=dict)
+    match_preference_memory: dict = Field(default_factory=dict)
     profile_completion: float = Field(default=0.0, ge=0.0, le=1.0)

@@ -1,5 +1,5 @@
 # schemas/__init__.py
-from .memory import ProfileMemory, ContextMemory, PreferenceMemory
+from .memory import ProfileMemory, ContextMemory, PreferenceMemory, MatchPreferenceMemory, Location
 from .api import (
     ChatRequest,
     ChatResponse,
@@ -9,12 +9,19 @@ from .api import (
     PreferenceMemoryUpdate,
     ConversationState,
     FullProfileResponse,
+    ProfileMemoryUpdateRequest,
+    ProfileMemoryUpdateResponse,
+    MatchPreferenceMemoryUpdateRequest,
+    MatchPreferenceMemoryUpdateResponse,
+    MatchPayloadResponse,
 )
 
 __all__ = [
     "ProfileMemory",
     "ContextMemory",
     "PreferenceMemory",
+    "MatchPreferenceMemory",
+    "Location",
     "ChatRequest",
     "ChatResponse",
     "MemoryUpdates",
@@ -23,4 +30,9 @@ __all__ = [
     "PreferenceMemoryUpdate",
     "ConversationState",
     "FullProfileResponse",
+    "ProfileMemoryUpdateRequest",
+    "ProfileMemoryUpdateResponse",
+    "MatchPreferenceMemoryUpdateRequest",
+    "MatchPreferenceMemoryUpdateResponse",
+    "MatchPayloadResponse",
 ]

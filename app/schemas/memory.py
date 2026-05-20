@@ -8,7 +8,12 @@ and by the FastAPI layer (for serialization / validation).
 from __future__ import annotations
 
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+class Location(BaseModel):
+    lat: float = Field(..., ge=-90, le=90)
+    lng: float = Field(..., ge=-180, le=180)
 
 
 # ---------------------------------------------------------------------------
@@ -21,6 +26,9 @@ class ProfileMemory(BaseModel):
     Populated progressively across many sessions.
     """
 
+    edad: Optional[int] = Field(default=None, ge=18, le=120)
+    genero: Optional[str] = Field(default=None)
+    bio: Optional[str] = Field(default=None)
     interests: List[str] = Field(
         default_factory=list,
         description=(
@@ -77,6 +85,7 @@ class ProfileMemory(BaseModel):
             "E.g. 'openly expressive', 'processes internally first', 'humor as coping'."
         ),
     )
+    location: Optional[Location] = Field(default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -168,3 +177,25 @@ class PreferenceMemory(BaseModel):
             "E.g. 'short and punchy', 'likes detailed responses'."
         ),
     )
+
+
+class MatchPreferenceMemory(BaseModel):
+    """
+    Dating/match filters collected by the frontend without the agent.
+    This is the `preference_memory` shape expected by the match service.
+    """
+
+    edad_minima: Optional[int] = Field(default=None, ge=18, le=120)
+    edad_maxima: Optional[int] = Field(default=None, ge=18, le=120)
+    distancia_maxima_km: Optional[float] = Field(default=None, gt=0)
+    genero_preferido: Optional[str] = Field(default=None)
+
+    @model_validator(mode="after")
+    def validate_age_range(self) -> "MatchPreferenceMemory":
+        if (
+            self.edad_minima is not None
+            and self.edad_maxima is not None
+            and self.edad_minima > self.edad_maxima
+        ):
+            raise ValueError("edad_minima cannot be greater than edad_maxima.")
+        return self

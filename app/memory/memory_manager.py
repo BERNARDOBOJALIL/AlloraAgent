@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from langgraph.store.memory import InMemoryStore
 
-from app.schemas.memory import ProfileMemory, ContextMemory, PreferenceMemory
+from app.schemas.memory import ProfileMemory, ContextMemory, PreferenceMemory, MatchPreferenceMemory
 
 
 # ---------------------------------------------------------------------------
@@ -22,6 +22,7 @@ from app.schemas.memory import ProfileMemory, ContextMemory, PreferenceMemory
 NS_PROFILE = "profile"
 NS_CONTEXT = "context"
 NS_PREFERENCE = "preference"
+NS_MATCH_PREFERENCE = "match_preference"
 
 # Single-document key per user in each namespace
 DOC_KEY = "data"
@@ -88,7 +89,7 @@ class MemoryManager:
         merged = current.model_dump()
 
         list_fields = {"interests", "personality_traits", "favorite_environments", "hobbies", "dislikes"}
-        scalar_fields = {"social_style", "vibe_summary", "emotional_style"}
+        scalar_fields = {"edad", "genero", "bio", "social_style", "vibe_summary", "emotional_style", "location"}
 
         for field, value in updates.items():
             if field not in merged:
@@ -110,7 +111,7 @@ class MemoryManager:
             raise ValueError(f"Unknown profile field: {field}")
 
         list_fields = {"interests", "personality_traits", "favorite_environments", "hobbies", "dislikes"}
-        scalar_fields = {"social_style", "vibe_summary", "emotional_style"}
+        scalar_fields = {"edad", "genero", "bio", "social_style", "vibe_summary", "emotional_style", "location"}
 
         if field in list_fields:
             merged[field] = self._dedupe_list([], value or [])
@@ -184,6 +185,36 @@ class MemoryManager:
         return result
 
     # ------------------------------------------------------------------
+    # Match Preference Memory
+    # ------------------------------------------------------------------
+
+    def get_match_preferences(self, user_id: str) -> MatchPreferenceMemory:
+        raw = self._read_raw(NS_MATCH_PREFERENCE, user_id)
+        if raw is None:
+            return MatchPreferenceMemory()
+        return MatchPreferenceMemory(**raw)
+
+    def update_match_preferences(self, user_id: str, updates: Dict[str, Any]) -> MatchPreferenceMemory:
+        current = self.get_match_preferences(user_id)
+        merged = current.model_dump()
+
+        for field, value in updates.items():
+            if field not in merged or value is None:
+                continue
+            merged[field] = value
+
+        result = MatchPreferenceMemory(**merged)
+        if (
+            result.edad_minima is not None
+            and result.edad_maxima is not None
+            and result.edad_minima > result.edad_maxima
+        ):
+            raise ValueError("edad_minima cannot be greater than edad_maxima.")
+
+        self._write_raw(NS_MATCH_PREFERENCE, user_id, result.model_dump())
+        return result
+
+    # ------------------------------------------------------------------
     # Utility
     # ------------------------------------------------------------------
 
@@ -193,7 +224,65 @@ class MemoryManager:
             "profile_memory": self.get_profile(user_id).model_dump(),
             "context_memory": self.get_context(user_id).model_dump(),
             "preference_memory": self.get_preferences(user_id).model_dump(),
+            "match_preference_memory": self.get_match_preferences(user_id).model_dump(),
         }
+
+    def get_match_payload(self, user_id: str) -> Dict[str, Any]:
+        """Return the exact payload expected by the external match service."""
+        return {
+            "user_id": user_id,
+            "profile_memory": self.get_profile(user_id).model_dump(),
+            "preference_memory": self.get_match_preferences(user_id).model_dump(),
+            "profile_completion": self.compute_match_completion(user_id),
+        }
+
+    def compute_match_completion(self, user_id: str) -> float:
+        """
+        Completion score for the external match payload only.
+        Conversation context and agent-only preferences do not affect this.
+        """
+        profile = self.get_profile(user_id)
+        match_prefs = self.get_match_preferences(user_id)
+
+        score = 0.0
+        total = 16.0
+
+        if profile.edad is not None:
+            score += 1.0
+        if profile.genero:
+            score += 1.0
+        if profile.bio:
+            score += 1.0
+        if profile.location:
+            score += 1.0
+        if len(profile.interests) >= 3:
+            score += 2.0
+        elif profile.interests:
+            score += 1.0
+        if len(profile.personality_traits) >= 2:
+            score += 2.0
+        elif profile.personality_traits:
+            score += 1.0
+        if profile.social_style:
+            score += 1.0
+        if profile.vibe_summary:
+            score += 1.0
+        if profile.hobbies:
+            score += 1.0
+        if profile.dislikes:
+            score += 1.0
+        if profile.favorite_environments:
+            score += 1.0
+        if profile.emotional_style:
+            score += 1.0
+        if match_prefs.edad_minima is not None and match_prefs.edad_maxima is not None:
+            score += 1.0
+        if match_prefs.distancia_maxima_km is not None:
+            score += 0.5
+        if match_prefs.genero_preferido:
+            score += 0.5
+
+        return round(min(score / total, 1.0), 2)
 
     def compute_completion(self, user_id: str) -> float:
         """

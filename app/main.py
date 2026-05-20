@@ -25,9 +25,14 @@ from app.schemas.api import (
     ChatRequest,
     ChatResponse,
     FullProfileResponse,
+    MatchPayloadResponse,
+    MatchPreferenceMemoryUpdateRequest,
+    MatchPreferenceMemoryUpdateResponse,
     ProfileCategoryUpdateRequest,
     ProfileCategoryUpdateResponse,
     ProfileEditCategory,
+    ProfileMemoryUpdateRequest,
+    ProfileMemoryUpdateResponse,
 )
 import re
 import unicodedata
@@ -154,6 +159,78 @@ def _format_profile_category_value(category: str, text: str) -> str | list[str]:
 
 
 @app.patch(
+    "/profile/{user_id}/profile-memory",
+    response_model=ProfileMemoryUpdateResponse,
+    summary="Update frontend-owned profile-memory fields directly",
+)
+async def update_profile_memory(
+    user_id: str,
+    request: ProfileMemoryUpdateRequest,
+) -> ProfileMemoryUpdateResponse:
+    """
+    Updates direct profile fields collected by the frontend without the agent.
+    Can also accept list/scalar profile fields when the frontend has already
+    prepared structured values.
+    """
+    updates = request.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No profile fields were provided.")
+
+    try:
+        updated_profile = memory_manager.update_profile(user_id, updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return ProfileMemoryUpdateResponse(
+        user_id=user_id,
+        profile_memory=updated_profile,
+        profile_completion=memory_manager.compute_match_completion(user_id),
+    )
+
+
+@app.patch(
+    "/profile/{user_id}/preference-memory",
+    response_model=MatchPreferenceMemoryUpdateResponse,
+    summary="Update match preference-memory fields directly",
+)
+async def update_match_preference_memory(
+    user_id: str,
+    request: MatchPreferenceMemoryUpdateRequest,
+) -> MatchPreferenceMemoryUpdateResponse:
+    """
+    Updates dating/match filters collected by the frontend without the agent.
+    This memory is returned as `preference_memory` in the match payload.
+    """
+    updates = request.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No preference fields were provided.")
+
+    try:
+        updated_preferences = memory_manager.update_match_preferences(user_id, updates)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return MatchPreferenceMemoryUpdateResponse(
+        user_id=user_id,
+        preference_memory=updated_preferences,
+        profile_completion=memory_manager.compute_match_completion(user_id),
+    )
+
+
+@app.get(
+    "/profile/{user_id}/match-payload",
+    response_model=MatchPayloadResponse,
+    summary="Get the payload expected by the match service",
+)
+async def get_match_payload(user_id: str) -> MatchPayloadResponse:
+    """
+    Returns the exact contract consumed by the external match backend:
+    user_id, profile_memory, match preference_memory, and profile_completion.
+    """
+    return MatchPayloadResponse(**memory_manager.get_match_payload(user_id))
+
+
+@app.patch(
     "/profile/{user_id}/profile-memory/{category}",
     response_model=ProfileCategoryUpdateResponse,
     summary="Edit one profile-memory category directly",
@@ -272,7 +349,7 @@ async def delete_profile(user_id: str) -> dict:
     Useful during testing or when a user requests data deletion.
     """
     store = memory_manager.store
-    for namespace_prefix in ["profile", "context", "preference"]:
+    for namespace_prefix in ["profile", "context", "preference", "match_preference"]:
         ns = (namespace_prefix, user_id)
         items = store.search(ns)
         for item in items:
