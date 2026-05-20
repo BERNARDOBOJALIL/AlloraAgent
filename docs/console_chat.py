@@ -63,17 +63,26 @@ def print_agent_reply(data: Dict[str, Any]) -> None:
         print("(Agent marked conversation as complete for now)")
 
 
-async def wait_for_server(client: httpx.AsyncClient) -> bool:
+async def wait_for_server(client: httpx.AsyncClient) -> tuple[bool, str]:
     for attempt in range(1, 6):
         try:
             resp = await client.get(f"{BASE_URL}/health", timeout=5)
             resp.raise_for_status()
-            return True
+            data = resp.json()
+            service = data.get("service")
+            if service != "allora-profile-agent":
+                return (
+                    False,
+                    f"{BASE_URL} respondio, pero parece ser '{service}', no 'allora-profile-agent'.",
+                )
+            return True, ""
         except (httpx.ConnectError, httpx.ReadTimeout):
             if attempt == 5:
-                return False
+                return False, f"No pude conectar con {BASE_URL}."
             await asyncio.sleep(1)
-    return False
+        except (httpx.HTTPError, ValueError) as exc:
+            return False, f"{BASE_URL}/health no respondio como el API de Allora: {exc}"
+    return False, f"No pude confirmar que {BASE_URL} sea el API de Allora."
 
 
 async def fetch_profile(client: httpx.AsyncClient, user_id: str) -> None:
@@ -129,10 +138,16 @@ async def main() -> None:
     thread_id = f"session-{uuid.uuid4().hex[:8]}"
 
     async with httpx.AsyncClient() as client:
-        is_ready = await wait_for_server(client)
+        is_ready, readiness_error = await wait_for_server(client)
         if not is_ready:
-            print("\nEl servidor no está disponible. Inícialo con:")
-            print("  uvicorn app.main:app --reload")
+            print(f"\nEl servidor de Allora no esta disponible en {BASE_URL}.")
+            if readiness_error:
+                print(f"Detalle: {readiness_error}")
+            print("\nInicialo en un puerto libre, por ejemplo:")
+            print("  uvicorn app.main:app --host 127.0.0.1 --port 8002")
+            print("\nY apunta este cliente a ese puerto:")
+            print('  $env:ALLORA_BASE_URL="http://127.0.0.1:8002"')
+            print("  python docs/console_chat.py")
             return
 
         print(f"\nConectado a {BASE_URL}")
@@ -150,6 +165,7 @@ async def main() -> None:
             print_agent_reply(seed_data)
         except httpx.HTTPStatusError as exc:
             print(f"\nError HTTP durante el inicio: {exc}")
+            print(f"Respuesta del servidor: {exc.response.text}")
         except httpx.ReadTimeout:
             print("\nEl inicio tardó demasiado. Sigo en modo chat de todas formas.")
         except httpx.HTTPError as exc:
@@ -201,6 +217,7 @@ async def main() -> None:
                 print_agent_reply(data)
             except httpx.HTTPStatusError as exc:
                 print(f"\nError HTTP: {exc}")
+                print(f"Respuesta del servidor: {exc.response.text}")
             except httpx.ReadTimeout:
                 print("\nLa petición tardó demasiado. El servidor está ocupado o no responde.")
             except httpx.HTTPError as exc:

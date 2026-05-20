@@ -12,7 +12,7 @@ Graph architecture
                     └─────────┬────────────┘
                               │
                     ┌─────────▼────────────┐
-                    │  extract_and_save    │  ◄── Trustcall / structured extraction
+                    │  extract_and_save    │  ◄── JSON validation + memory save
                     └─────────┬────────────┘
                               │
                              END
@@ -34,14 +34,13 @@ from typing import Any, Dict, List, Optional
 
 import os
 import logging
-import unicodedata
 
 class _UnavailableModel:
     # Placeholder adapter with same `invoke(messages)` shape. It will raise
     # when called so `profile_agent`'s try/except will produce a friendly
     # offline JSON response instead of crashing the API.
     def __init__(self, *args, **kwargs):
-        self.model_name = kwargs.get("model", "llama-3.1-8b-instant")
+        self.model_name = kwargs.get("model", os.getenv("ALLORA_GROQ_MODEL", "llama-3.3-70b-versatile"))
 
     def invoke(self, messages):
         raise RuntimeError(
@@ -59,10 +58,12 @@ try:
     # predictably so we return the demo fallback instead of 500.
     from langchain_groq import ChatGroq  # type: ignore
 
+    GROQ_MODEL = os.getenv("ALLORA_GROQ_MODEL", "llama-3.3-70b-versatile")
     _model = ChatGroq(
-        model="llama-3.1-8b-instant",
-        temperature=0.7,
-        max_tokens=1024,
+        model=GROQ_MODEL,
+        temperature=float(os.getenv("ALLORA_MODEL_TEMPERATURE", "0.35")),
+        max_tokens=int(os.getenv("ALLORA_MODEL_MAX_TOKENS", "2048")),
+        model_kwargs={"response_format": {"type": "json_object"}},
     )
 except Exception:
     _model = _UnavailableModel()
@@ -79,7 +80,7 @@ else:
         "Current GROQ_API_KEY present=%s",
         bool(os.environ.get("GROQ_API_KEY")),
     )
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -96,403 +97,20 @@ from app.schemas.api import (
 )
 
 
-def _latest_user_message(messages: List[Any]) -> str:
-    """Return the latest human message content from the graph state."""
-    for message in reversed(messages):
-        if isinstance(message, HumanMessage):
-            return str(message.content or "")
-    return ""
+PROFILE_LIST_FIELDS = {"interests", "personality_traits", "favorite_environments", "hobbies", "dislikes"}
+PROFILE_SCALAR_FIELDS = {"social_style", "vibe_summary", "emotional_style"}
+PROFILE_EDIT_FIELDS = PROFILE_LIST_FIELDS | PROFILE_SCALAR_FIELDS
 
-
-def _latest_assistant_message_before_user(messages: List[Any]) -> str:
-    """Return the assistant message immediately before the latest human turn."""
-    seen_latest_user = False
-    for message in reversed(messages):
-        if isinstance(message, HumanMessage):
-            if not seen_latest_user:
-                seen_latest_user = True
-            continue
-        if seen_latest_user and isinstance(message, AIMessage):
-            return str(message.content or "")
-    return ""
-
-
-def _normalize_memory_item(item: str) -> str:
-    item = item.strip().lower()
-    item = unicodedata.normalize("NFKD", item)
-    item = "".join(ch for ch in item if not unicodedata.combining(ch))
-    item = re.sub(r"^[\W_]+|[\W_]+$", "", item)
-    item = re.sub(
-        r"^(a |al |la |el |los |las |en |de |del |hacer |ir a |to |the |going to )",
-        "",
-        item,
-    )
-    item = re.sub(r"\b(lol|jaja|haha|jeje)\b", "", item).strip()
-    syn_map = {
-        "horseback riding": "montar a caballo",
-        "caballo": "montar a caballo",
-        "natacion": "nadar",
-        "swimming": "nadar",
-        "cine": "ir al cine",
-        "peliculas": "ir al cine",
-        "movies": "ir al cine",
-    }
-    return syn_map.get(item, item)
-
-
-def _split_memory_items(raw_items: str) -> list[str]:
-    raw_items = re.sub(r"\b(?:pero|but)\b.*$", "", raw_items, flags=re.I).strip()
-    parts = re.split(r",|;| y | e | and | & |/|\balso\b|\bademas\b", raw_items, flags=re.I)
-    items: list[str] = []
-    skipped_starts = (
-        "prefiero ",
-        "i prefer ",
-        "no me ",
-        "i don't ",
-        "i do not ",
-        "odio ",
-        "detesto ",
-    )
-    value_items = {
-        "sinceridad",
-        "honestidad",
-        "autenticidad",
-        "confianza",
-        "no juzgar",
-        "no juicio",
-    }
-    for part in parts:
-        raw_part = part.strip().lower()
-        if not raw_part or raw_part.startswith(skipped_starts):
-            continue
-        normalized = _normalize_memory_item(part)
-        if normalized in value_items:
-            continue
-        if normalized:
-            items.append(normalized)
-    return items
-
-
-def _append_new(target: Dict[str, Any], field: str, incoming: list[str], existing: list[str]) -> None:
-    seen = {str(item).lower() for item in existing}
-    current = target.setdefault(field, [])
-    for item in incoming:
-        if item and item.lower() not in seen and item.lower() not in {x.lower() for x in current}:
-            current.append(item)
-
-
-_ENVIRONMENT_TERMS = {
-    "lugares intimos",
-    "lugares tranquilos",
-    "ambientes informales",
-    "ambientes tranquilos",
-    "entornos tranquilos",
-    "poco ruido",
-    "cafeterias",
-    "cafes",
-    "coffee shops",
-    "playa",
-    "montana",
-    "museos",
-    "parques",
+PROFILE_FIELD_DESCRIPTIONS = {
+    "interests": "topics, activities, tastes, or passions the user genuinely cares about",
+    "personality_traits": "observable personality traits or values, phrased as concise human traits",
+    "favorite_environments": "places, settings, or atmospheres where the user feels comfortable or alive",
+    "hobbies": "specific recurring hobbies or activities the user does",
+    "dislikes": "things the user dislikes, avoids, or considers turn-offs",
+    "social_style": "one concise sentence about how the user tends to socialize",
+    "vibe_summary": "one warm one-or-two sentence summary of the user's overall vibe",
+    "emotional_style": "one concise sentence about how the user processes or expresses emotions",
 }
-
-_CONVERSATION_INTEREST_TERMS = {
-    "platicas interminables",
-    "conversaciones profundas",
-    "hablar de temas profundos",
-    "temas profundos",
-    "filosofia",
-    "filosofia",
-    "temas serios",
-}
-
-_LISTENING_TERMS = {
-    "escuchar a la otra persona",
-    "mas escuchar a la otra persona",
-    "escuchar",
-}
-
-
-def _is_environment_item(item: str) -> bool:
-    normalized = _normalize_memory_item(item)
-    return (
-        normalized in _ENVIRONMENT_TERMS
-        or re.search(r"\b(lugares?|ambientes?|entornos?)\b", normalized) is not None
-        or re.search(r"\b(intimos?|tranquilos?|poco ruido|silenciosos?|calmados?)\b", normalized) is not None
-    )
-
-
-def _is_conversation_interest_item(item: str) -> bool:
-    normalized = _normalize_memory_item(item)
-    return (
-        normalized in _CONVERSATION_INTEREST_TERMS
-        or re.search(r"\b(platicas?|conversaciones?|temas?)\b", normalized) is not None
-        or re.search(r"\b(profundos?|serios?|filosofia|filosoficos?)\b", normalized) is not None
-    )
-
-
-def _is_listening_item(item: str) -> bool:
-    normalized = _normalize_memory_item(item)
-    return normalized in _LISTENING_TERMS or re.search(r"\bescuchar\b", normalized) is not None
-
-
-def _route_profile_items(
-    profile: Dict[str, Any],
-    context: Dict[str, Any],
-    items: list[str],
-    profile_existing: Dict[str, Any],
-    context_existing: Dict[str, Any],
-) -> None:
-    hobbies: list[str] = []
-    interests: list[str] = []
-    environments: list[str] = []
-    traits: list[str] = []
-
-    for item in items:
-        if _is_environment_item(item):
-            environments.append(item)
-            continue
-        if _is_listening_item(item):
-            traits.append("attentive listener")
-            interests.append("deep conversation")
-            continue
-        if _is_conversation_interest_item(item):
-            interests.append(item)
-            continue
-        hobbies.append(item)
-        interests.append(item)
-
-    _append_new(profile, "hobbies", hobbies, profile_existing.get("hobbies", []))
-    _append_new(profile, "interests", interests, profile_existing.get("interests", []))
-    _append_new(profile, "favorite_environments", environments, profile_existing.get("favorite_environments", []))
-    _append_new(profile, "personality_traits", traits, profile_existing.get("personality_traits", []))
-    _append_new(context, "recent_topics", hobbies + interests + environments + traits, context_existing.get("recent_topics", []))
-
-
-def _extract_user_memory_updates(
-    text: str,
-    existing_memory: Dict[str, Any],
-    previous_assistant_text: str = "",
-) -> Dict[str, Dict[str, Any]]:
-    """
-    Deterministic safety net for high-signal profile facts in the user's own words.
-    The LLM may still add richer summaries, but explicit user facts should not vanish.
-    """
-    profile_existing = existing_memory.get("profile_memory", {})
-    context_existing = existing_memory.get("context_memory", {})
-    prefs_existing = existing_memory.get("preference_memory", {})
-
-    profile: Dict[str, Any] = {
-        "interests": [],
-        "personality_traits": [],
-        "favorite_environments": [],
-        "hobbies": [],
-        "dislikes": [],
-    }
-    context: Dict[str, Any] = {
-        "recent_topics": [],
-        "evolving_interests": [],
-        "recent_life_changes": [],
-    }
-    prefs: Dict[str, Any] = {"sensitive_topics": []}
-    normalized_text = _normalize_memory_item(text)
-    normalized_previous = _normalize_memory_item(previous_assistant_text)
-
-    def _mask(pattern: str, source: str) -> str:
-        for match in list(re.finditer(pattern, source, flags=re.I)):
-            source = source[: match.start()] + (" " * (match.end() - match.start())) + source[match.end():]
-        return source
-
-    dislike_patterns = [
-        r"(?:no me gusta(?:n)?|odio|detesto|me disgusta(?:n)?|no soporto|me caga(?:n)?) (?P<items>[^.\n?]+)",
-        r"(?:i don't like|i do not like|i hate|not a fan of|i dislike) (?P<items>[^.\n?]+)",
-        r"(?:dislikes|turn-offs|turnoffs|cosas que no le gustan)\s*:\s*(?P<items>[^.\n]+)",
-    ]
-    like_search_text = text
-    for pattern in dislike_patterns:
-        for match in re.finditer(pattern, text, flags=re.I):
-            _append_new(profile, "dislikes", _split_memory_items(match.group("items")), profile_existing.get("dislikes", []))
-            like_search_text = (
-                like_search_text[: match.start()]
-                + (" " * (match.end() - match.start()))
-                + like_search_text[match.end():]
-            )
-
-    value_like_patterns = [
-        r"(?:me gusta|me encanta|valoro|busco|prefiero) (?:la )?(?:sinceridad|honestidad|autenticidad|confianza)",
-        r"(?:que )?(?:la otra persona )?(?:no me juzgue|no juzgue)",
-        r"(?:sin temor a ser juzgado|sin miedo a ser juzgado|sin ser juzgado)",
-    ]
-    for pattern in value_like_patterns:
-        like_search_text = _mask(pattern, like_search_text)
-
-    like_patterns = [
-        r"(?:^|[\s,;])(?:me gusta(?:n)?|me encanta(?:n)?|amo|disfruto|me apasiona) (?P<items>[^.\n?]+)",
-        r"(?:i like|i love|i enjoy|i'm into|i am into|i've been into|i have been into) (?P<items>[^.\n?]+)",
-        r"(?:hobbies|pasatiempos)\s*:\s*(?P<items>[^.\n]+)",
-        r"(?:mis hobbies son|my hobbies are) (?P<items>[^.\n?]+)",
-    ]
-    for pattern in like_patterns:
-        for match in re.finditer(pattern, like_search_text, flags=re.I):
-            items = _split_memory_items(match.group("items"))
-            _route_profile_items(profile, context, items, profile_existing, context_existing)
-
-    activity_patterns = [
-        r"(?:en mi tiempo libre|suelo|usually|i usually|i spend .*? on|i started going to|empece a ir a|empecé a ir a) (?P<items>[^.\n?]+)",
-    ]
-    for pattern in activity_patterns:
-        for match in re.finditer(pattern, text, flags=re.I):
-            items = _split_memory_items(match.group("items"))
-            _route_profile_items(profile, context, items, profile_existing, context_existing)
-
-    environment_patterns = [
-        r"(?:me siento mejor en|me encanta estar en|prefiero lugares como|i feel best in|i love being in|i prefer places like) (?P<items>[^.\n?]+)",
-        r"(?:coffee shops|cafes|cafeterias|playa|beach|montana|mountains|rooftop bars|clubs|museums)",
-    ]
-    for pattern in environment_patterns:
-        for match in re.finditer(pattern, text, flags=re.I):
-            value = match.groupdict().get("items") or match.group(0)
-            _append_new(
-                profile,
-                "favorite_environments",
-                _split_memory_items(value),
-                profile_existing.get("favorite_environments", []),
-            )
-
-    trait_terms = {
-        "introvert": "introvert-leaning",
-        "introverted": "introvert-leaning",
-        "introvertido": "introvertido",
-        "introvertida": "introvertida",
-        "extrovert": "extrovert-leaning",
-        "extroverted": "extrovert-leaning",
-        "extrovertido": "extrovertido",
-        "extrovertida": "extrovertida",
-        "creative": "creative",
-        "creativo": "creativo",
-        "creativa": "creativa",
-        "curious": "curious",
-        "curioso": "curioso",
-        "curiosa": "curiosa",
-        "spontaneous": "spontaneous",
-        "espontaneo": "espontaneo",
-        "espontanea": "espontanea",
-    }
-    found_traits = [trait for term, trait in trait_terms.items() if re.search(rf"\b{re.escape(term)}\b", normalized_text)]
-    _append_new(profile, "personality_traits", found_traits, profile_existing.get("personality_traits", []))
-
-    if re.search(r"\b(murio mi perro|murio mi mascota|perdi a mi perro|perdi a mi mascota|murio mi gato|perdi a mi gato)\b", normalized_text):
-        _append_new(
-            context,
-            "recent_life_changes",
-            ["recently lost a pet"],
-            context_existing.get("recent_life_changes", []),
-        )
-        context["current_mood_theme"] = "grieving the recent loss of a pet"
-        _append_new(prefs, "sensitive_topics", ["pet loss"], prefs_existing.get("sensitive_topics", []))
-
-    if re.search(r"\b(personas en las que confio|personas que confio|people i trust|personas de confianza)\b", normalized_text):
-        profile["emotional_style"] = "comfortable sharing feelings with people they trust"
-        _append_new(
-            profile,
-            "personality_traits",
-            ["trust-oriented", "emotionally open with trusted people"],
-            profile_existing.get("personality_traits", []),
-        )
-
-    if re.search(r"\b(no me juzgue|no juzgue|no me juzgan|being judged|sin ser juzgado)\b", normalized_text):
-        _append_new(profile, "dislikes", ["being judged"], profile_existing.get("dislikes", []))
-        _append_new(
-            profile,
-            "personality_traits",
-            ["values nonjudgmental connection"],
-            profile_existing.get("personality_traits", []),
-        )
-        prefs["conversation_style"] = "warm, accepting, and nonjudgmental"
-
-    if re.search(r"\b(sinceridad|honestidad|autenticidad)\b", normalized_text):
-        _append_new(profile, "personality_traits", ["values sincerity"], profile_existing.get("personality_traits", []))
-        prefs["conversation_style"] = "honest and direct"
-
-    if re.search(r"\b(no me siento comodo en conflictos|no estoy comodo en conflictos|evito conflictos|conflictos)\b", normalized_text):
-        _append_new(profile, "dislikes", ["conflict"], profile_existing.get("dislikes", []))
-        _append_new(profile, "personality_traits", ["conflict-sensitive"], profile_existing.get("personality_traits", []))
-        _append_new(prefs, "sensitive_topics", ["conflict"], prefs_existing.get("sensitive_topics", []))
-        profile["emotional_style"] = "sensitive around conflict and prefers emotionally safe conversations"
-
-    if re.search(r"\b(lloro mucho|llora mucho|llorar mucho|i cry a lot)\b", normalized_text):
-        _append_new(profile, "personality_traits", ["emotionally expressive"], profile_existing.get("personality_traits", []))
-        profile["emotional_style"] = "emotionally expressive and can cry easily, especially around conflict"
-
-    yes_to_context = re.fullmatch(r"(si|sí|yes|claro|totalmente|me encantaria|me encantaria mucho|si me encantaria|si, me encantaria)[\s.!?]*", normalized_text)
-    if yes_to_context and re.search(r"\b(sin temor a ser juzgado|sin miedo a ser juzgado|ser completamente tu mismo|completamente tu mismo)\b", normalized_previous):
-        _append_new(
-            profile,
-            "personality_traits",
-            ["wants to feel fully accepted"],
-            profile_existing.get("personality_traits", []),
-        )
-        _append_new(profile, "dislikes", ["feeling judged"], profile_existing.get("dislikes", []))
-        prefs["conversation_style"] = "accepting and emotionally safe"
-    if yes_to_context and re.search(r"\b(directa y sincera|directo y sincero|cosas dificiles|sincera contigo|sincero contigo)\b", normalized_previous):
-        _append_new(profile, "personality_traits", ["values direct honesty"], profile_existing.get("personality_traits", []))
-        prefs["conversation_style"] = "honest and direct"
-
-    if re.search(r"\b(small groups?|grupos pequenos|planes tranquilos|quiet plans)\b", normalized_text):
-        profile["social_style"] = "prefers quieter plans or small-group settings"
-    elif re.search(r"\b(group stuff|grupos|parties|fiestas|salir mas|saying yes more)\b", normalized_text):
-        profile["social_style"] = "open to group plans and saying yes socially"
-
-    if profile["favorite_environments"] and not profile.get("social_style"):
-        profile["social_style"] = "prefers calm, intimate, low-noise environments"
-    if any(_is_conversation_interest_item(item) for item in profile["interests"]) or any(
-        trait == "attentive listener" for trait in profile["personality_traits"]
-    ):
-        _append_new(
-            profile,
-            "personality_traits",
-            ["reflective", "drawn to deep conversation"],
-            profile_existing.get("personality_traits", []),
-        )
-    if (
-        (profile["favorite_environments"] or profile["personality_traits"] or profile["interests"])
-        and not profile_existing.get("vibe_summary")
-    ):
-        vibe_parts = []
-        if profile["favorite_environments"]:
-            vibe_parts.append("prefers calm, intimate spaces")
-        if any(_is_conversation_interest_item(item) for item in profile["interests"]):
-            vibe_parts.append("enjoys deep, thoughtful conversations")
-        if "attentive listener" in profile["personality_traits"]:
-            vibe_parts.append("likes listening closely to others")
-        if vibe_parts:
-            profile["vibe_summary"] = "Reflective person who " + ", ".join(vibe_parts) + "."
-
-    if re.search(r"\b(overthink|sobrepienso|me cuesta abrirme|open up|me abro|process internally)\b", normalized_text):
-        profile["emotional_style"] = "processes feelings internally at first, then opens up with trust"
-
-    if re.search(r"\b(short questions|preguntas cortas|breve|directo|directa)\b", normalized_text):
-        prefs["prefers_short_questions"] = True
-        if not prefs_existing.get("conversation_style"):
-            prefs["conversation_style"] = "direct and concise"
-
-    if re.search(r"\b(rough week|semana dificil|semana dura|feeling better|me siento mejor)\b", normalized_text):
-        context["current_mood_theme"] = "recovering from a rough week but feeling better"
-
-    life_patterns = [
-        r"(?:just moved|me mude|me mudé|new city|nueva ciudad|new job|nuevo trabajo|started a new|empece un nuevo|empecé un nuevo)(?P<rest>[^.\n?]*)",
-    ]
-    for pattern in life_patterns:
-        for match in re.finditer(pattern, text, flags=re.I):
-            update = _normalize_memory_item((match.group(0) or "").strip())
-            _append_new(context, "recent_life_changes", [update], context_existing.get("recent_life_changes", []))
-
-    if profile["hobbies"] or profile["interests"] or profile["dislikes"] or profile["personality_traits"]:
-        topics = profile["hobbies"] + profile["interests"] + profile["dislikes"] + profile["personality_traits"]
-        _append_new(context, "recent_topics", topics, context_existing.get("recent_topics", []))
-
-    return {"profile": profile, "context": context, "preferences": prefs}
 
 
 # ---------------------------------------------------------------------------
@@ -782,6 +400,105 @@ def profile_agent(state: AlloraState) -> Dict[str, Any]:
     return {"raw_agent_output": raw_text}
 
 
+def _message_content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: List[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str) and text.strip():
+                    chunks.append(text)
+            elif isinstance(block, str) and block.strip():
+                chunks.append(block)
+        return "\n".join(chunks).strip()
+    return str(content)
+
+
+def _dedupe_clean_items(items: List[Any]) -> List[str]:
+    cleaned: List[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        value = re.sub(r"\s+", " ", item).strip(" \t\r\n-•.,;:")
+        if not value:
+            continue
+        key = value.casefold()
+        if key not in seen:
+            cleaned.append(value)
+            seen.add(key)
+    return cleaned
+
+
+async def format_profile_field_with_model(
+    field: str,
+    user_text: str,
+    current_value: Any = None,
+) -> str | List[str]:
+    """
+    Convert a free-form manual edit prompt into exactly one profile field value.
+    The model may interpret and clean the user's text, but it must not update
+    any field other than the requested one.
+    """
+    if field not in PROFILE_EDIT_FIELDS:
+        raise ValueError(f"Unknown profile field: {field}")
+
+    expected_type = "array of short strings" if field in PROFILE_LIST_FIELDS else "single concise string"
+    system_prompt = f"""
+You format manual edits for a dating profile memory system.
+
+Requested field: {field}
+Field meaning: {PROFILE_FIELD_DESCRIPTIONS[field]}
+Expected value type: {expected_type}
+
+Rules:
+- Use ONLY the user's text and the requested field.
+- Do not infer unrelated fields.
+- Preserve the user's language.
+- Remove filler such as "me gusta", "soy", "quiero cambiarlo a" when it is not part of the actual value.
+- If the text is unusable for this field, return an empty array for list fields or null for scalar fields.
+- Return ONLY valid JSON in this shape: {{"value": ...}}
+""".strip()
+
+    human_prompt = json.dumps(
+        {
+            "field": field,
+            "current_value": current_value,
+            "user_text": user_text,
+        },
+        ensure_ascii=False,
+    )
+
+    messages = [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
+
+    try:
+        if hasattr(_model, "ainvoke"):
+            response = await _model.ainvoke(messages)
+        else:
+            response = _model.invoke(messages)
+    except Exception as exc:
+        logging.exception("Profile field edit model invocation failed")
+        raise RuntimeError("Profile edit model unavailable.") from exc
+
+    payload = _safe_parse_json(_message_content_to_text(response.content))
+    value = payload.get("value")
+
+    if field in PROFILE_LIST_FIELDS:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("Model returned a non-list value for a list profile field.")
+        return _dedupe_clean_items(value)
+
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("Model returned a non-string value for a scalar profile field.")
+    return re.sub(r"\s+", " ", value).strip()
+
+
 # ---------------------------------------------------------------------------
 # Node: extract_and_save
 # ---------------------------------------------------------------------------
@@ -835,69 +552,6 @@ def extract_and_save(state: AlloraState) -> Dict[str, Any]:
     """
     user_id = state["user_id"]
     raw = state.get("raw_agent_output", "")
-    existing_memory = memory_manager.get_all(user_id)
-    latest_user_text = _latest_user_message(state["messages"])
-    previous_assistant_text = _latest_assistant_message_before_user(state["messages"])
-    user_extracted = _extract_user_memory_updates(
-        latest_user_text,
-        existing_memory,
-        previous_assistant_text=previous_assistant_text,
-    )
-
-    def _merge_extracted_updates(
-        profile_delta: Dict[str, Any],
-        context_delta: Dict[str, Any],
-        prefs_delta: Dict[str, Any],
-    ) -> None:
-        extracted_profile = user_extracted["profile"]
-        extracted_context = user_extracted["context"]
-        extracted_prefs = user_extracted["preferences"]
-
-        list_profile_fields = {
-            "interests",
-            "personality_traits",
-            "favorite_environments",
-            "hobbies",
-            "dislikes",
-        }
-        for field in list_profile_fields:
-            if extracted_profile.get(field):
-                current = profile_delta.setdefault(field, [])
-                seen = {str(item).lower() for item in current}
-                for item in extracted_profile[field]:
-                    if item.lower() not in seen:
-                        current.append(item)
-                        seen.add(item.lower())
-
-        for field in ("social_style", "vibe_summary", "emotional_style"):
-            if extracted_profile.get(field) and not profile_delta.get(field):
-                profile_delta[field] = extracted_profile[field]
-
-        for field in ("recent_topics", "evolving_interests", "recent_life_changes"):
-            if extracted_context.get(field):
-                current = context_delta.setdefault(field, [])
-                seen = {str(item).lower() for item in current}
-                for item in extracted_context[field]:
-                    if item.lower() not in seen:
-                        current.append(item)
-                        seen.add(item.lower())
-
-        for field in ("recent_social_behavior", "current_mood_theme"):
-            if extracted_context.get(field) and not context_delta.get(field):
-                context_delta[field] = extracted_context[field]
-
-        if extracted_prefs.get("sensitive_topics"):
-            current = prefs_delta.setdefault("sensitive_topics", [])
-            seen = {str(item).lower() for item in current}
-            for item in extracted_prefs["sensitive_topics"]:
-                if item.lower() not in seen:
-                    current.append(item)
-                    seen.add(item.lower())
-        for field in ("conversation_style", "depth_preference"):
-            if extracted_prefs.get(field) and not prefs_delta.get(field):
-                prefs_delta[field] = extracted_prefs[field]
-        if extracted_prefs.get("prefers_short_questions"):
-            prefs_delta["prefers_short_questions"] = True
 
     try:
         payload = _safe_parse_json(raw)
@@ -914,7 +568,6 @@ def extract_and_save(state: AlloraState) -> Dict[str, Any]:
         }
         context_delta: Dict[str, Any] = {"recent_topics": []}
         prefs_delta: Dict[str, Any] = {}
-        _merge_extracted_updates(profile_delta, context_delta, prefs_delta)
 
         if any(v for v in profile_delta.values()) or any(v for v in context_delta.values()) or any(v for v in prefs_delta.values()):
             memory_manager.update_profile(user_id, profile_delta)
@@ -1014,8 +667,6 @@ def extract_and_save(state: AlloraState) -> Dict[str, Any]:
             "depth_preference": raw_prefs.get("depth_preference"),
             "sensitive_topics": raw_prefs.get("sensitive_topics") or [],
         }
-
-    _merge_extracted_updates(profile_delta, context_delta, prefs_delta)
 
     if any(v for v in profile_delta.values()):
         memory_manager.update_profile(user_id, profile_delta)

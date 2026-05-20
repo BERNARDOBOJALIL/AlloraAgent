@@ -11,9 +11,6 @@ GET  /health            → Basic health check
 
 from __future__ import annotations
 
-import re
-import unicodedata
-
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,7 +19,7 @@ from langchain_core.messages import HumanMessage
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.agent.agent import graph
+from app.agent.agent import format_profile_field_with_model, graph
 from app.memory.memory_manager import memory_manager
 from app.schemas.api import (
     ChatRequest,
@@ -32,6 +29,8 @@ from app.schemas.api import (
     ProfileCategoryUpdateResponse,
     ProfileEditCategory,
 )
+import re
+import unicodedata
 
 app = FastAPI(
     title="Allora Profile Agent",
@@ -173,6 +172,52 @@ async def update_profile_memory_category(
 
     if formatted_value == "" or formatted_value == []:
         raise HTTPException(status_code=400, detail="No usable profile content was provided.")
+
+    try:
+        updated_profile = memory_manager.replace_profile_field(user_id, field, formatted_value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return ProfileCategoryUpdateResponse(
+        user_id=user_id,
+        category=field,
+        formatted_value=formatted_value,
+        profile_memory=updated_profile.model_dump(),
+        profile_completion=memory_manager.compute_completion(user_id),
+    )
+
+
+@app.post(
+    "/profile/{user_id}/profile-memory/{category}/generate",
+    response_model=ProfileCategoryUpdateResponse,
+    summary="Generate one profile field from a user prompt using the agent",
+)
+async def generate_profile_field_from_prompt(
+    user_id: str,
+    category: ProfileEditCategory,
+    request: ProfileCategoryUpdateRequest,
+) -> ProfileCategoryUpdateResponse:
+    """
+    Uses the internal agent to interpret a short user prompt and produce a
+    formatted value for exactly one profile field. The generated value then
+    replaces the stored profile field.
+    """
+    field = _canonical_profile_category(category)
+
+    # Get current stored value to provide context to the field formatter
+    all_mem = memory_manager.get_all(user_id)
+    current_value = all_mem.get("profile_memory", {}).get(field)
+
+    try:
+        formatted_value = await format_profile_field_with_model(field, request.text, current_value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    # Treat empty / unusable outputs as a client error
+    if formatted_value == "" or formatted_value == [] or formatted_value is None:
+        raise HTTPException(status_code=400, detail="Model could not produce a usable value for this field.")
 
     try:
         updated_profile = memory_manager.replace_profile_field(user_id, field, formatted_value)
