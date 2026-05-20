@@ -51,6 +51,18 @@ uvicorn app.main:app --reload --port 8000
 
 La documentación interactiva estará disponible en `http://localhost:8000/docs`.
 
+Persistencia con MongoDB Atlas
+
+Para que la memoria sobreviva reinicios del servidor, configure estas variables en `.env` o en el dashboard del deploy:
+
+```bash
+MONGODB_URI=mongodb+srv://<user>:<password>@<cluster-url>/?retryWrites=true&w=majority
+MONGODB_DB_NAME=allora_agent
+MONGODB_COLLECTION=memory
+```
+
+`MONGODB_URI` tambien puede llamarse `MONGO_URI`. Si ninguna de las dos existe, la app usa memoria en RAM solo para desarrollo local.
+
 Endpoints principales
 
 - `POST /chat`
@@ -196,6 +208,9 @@ Create `.env` and add your Groq key if you want the live model:
 
 ```text
 GROQ_API_KEY=your_key_here
+MONGODB_URI=your_mongodb_atlas_connection_string
+MONGODB_DB_NAME=allora_agent
+MONGODB_COLLECTION=memory
 ```
 
 Start the API:
@@ -725,6 +740,7 @@ allora_agent/
       agent.py
     memory/
       memory_manager.py
+      mongo_store.py
     schemas/
       api.py
       memory.py

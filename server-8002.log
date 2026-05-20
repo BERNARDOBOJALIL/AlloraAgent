@@ -2,3 +2,6 @@ INFO:     127.0.0.1:56487 - "GET /health HTTP/1.1" 200 OK
 INFO:     127.0.0.1:56496 - "GET /health HTTP/1.1" 200 OK
 INFO:     127.0.0.1:56496 - "GET /health HTTP/1.1" 200 OK
 INFO:     127.0.0.1:56507 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65460 - "GET /profile/6a08e4a/match-payload HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65484 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51648 - "GET /health HTTP/1.1" 200 OK

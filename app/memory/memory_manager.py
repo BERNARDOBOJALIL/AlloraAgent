@@ -8,11 +8,12 @@ Handles deduplication so the agent never writes duplicate interests or traits.
 
 from __future__ import annotations
 
-import uuid
-from typing import Any, Dict, List, Optional, Tuple
+import os
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 from langgraph.store.memory import InMemoryStore
 
+from app.memory.mongo_store import MongoMemoryStore
 from app.schemas.memory import ProfileMemory, ContextMemory, PreferenceMemory, MatchPreferenceMemory
 
 
@@ -28,17 +29,27 @@ NS_MATCH_PREFERENCE = "match_preference"
 DOC_KEY = "data"
 
 
+class MemoryStore(Protocol):
+    def search(self, namespace: Tuple[str, str]) -> List[Any]:
+        ...
+
+    def put(self, namespace: Tuple[str, str], key: str, value: Dict[str, Any]) -> None:
+        ...
+
+    def delete(self, namespace: Tuple[str, str], key: str) -> None:
+        ...
+
+
 class MemoryManager:
     """
     Centralised access to Allora's three long-term memory stores.
 
-    In production replace `InMemoryStore` with a persistent backend:
-        from langgraph.store.postgres import PostgresStore
-        store = PostgresStore(connection_string=...)
+    Set MONGODB_URI (or MONGO_URI) to persist memory in MongoDB Atlas.
+    Without that env var, local development uses LangGraph's InMemoryStore.
     """
 
-    def __init__(self, store: Optional[InMemoryStore] = None) -> None:
-        self.store: InMemoryStore = store or InMemoryStore()
+    def __init__(self, store: Optional[MemoryStore] = None) -> None:
+        self.store: MemoryStore = store or InMemoryStore()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -335,7 +346,19 @@ class MemoryManager:
 # ---------------------------------------------------------------------------
 # Singleton — shared across the FastAPI app lifetime
 # ---------------------------------------------------------------------------
-_store = InMemoryStore()
+def _build_store() -> MemoryStore:
+    mongo_uri = os.getenv("MONGODB_URI") or os.getenv("MONGO_URI")
+    if mongo_uri:
+        return MongoMemoryStore(
+            uri=mongo_uri,
+            database_name=os.getenv("MONGODB_DB_NAME", "allora_agent"),
+            collection_name=os.getenv("MONGODB_COLLECTION", "memory"),
+            server_selection_timeout_ms=int(os.getenv("MONGODB_TIMEOUT_MS", "5000")),
+        )
+    return InMemoryStore()
+
+
+_store = _build_store()
 memory_manager = MemoryManager(store=_store)
 
 # Expose the raw store so LangGraph's checkpointer can share it
